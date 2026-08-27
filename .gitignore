@@ -1,0 +1,45 @@
+# Build results
+bin/
+obj/
+publish/
+publish_*/
+
+# Visual Studio
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nupkg
+**/[Pp]ackages/**/lib/*
+snupkg
+.nuget/
+*.cache
+
+# .NET Core / .NET SDK
+*.csproj.user
+*.dotLiquid
+
+# Temporary user files
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+.idea/
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Test data (not part of source)
+测试数据/
+输出结果*/
+App_Data/
+*.log
