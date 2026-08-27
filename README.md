@@ -34,6 +34,7 @@
 ## 🖥 界面预览
 
 四步渐进式向导：
+<img width="1288" height="827" alt="image" src="https://github.com/user-attachments/assets/b40adf7d-924b-4737-a218-4ff438582cc6" />
 
 ```
 ① 数据源  ──→  ② 模板  ──→  ③ 预览  ──→  ④ 生成
