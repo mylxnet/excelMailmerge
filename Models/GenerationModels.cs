@@ -1,19 +1,39 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
 namespace ExcelMailMerge.Models;
 
 /// <summary>
 /// 生成进度报告
 /// </summary>
-public class GenerationProgress
+public class GenerationProgress : INotifyPropertyChanged
 {
-    public int TotalRows { get; set; }
-    public int CurrentRowIndex { get; set; }
-    public int SuccessCount { get; set; }
-    public int FailCount { get; set; }
-    public int SkipCount { get; set; }
-    public bool IsCompleted { get; set; }
-    public bool IsCanceled { get; set; }
-    public string OutputFolder { get; set; } = string.Empty;
-    public List<string> Logs { get; set; } = new();
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnChanged([CallerMemberName] string? name = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        // 计算属性也依赖这些字段，联动通知
+        if (name is nameof(TotalRows) or nameof(CurrentRowIndex))
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProgressPercent)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusText)));
+        }
+        if (name is nameof(SuccessCount) or nameof(FailCount) or nameof(IsCompleted) or nameof(IsCanceled))
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusText)));
+        }
+    }
+
+    private int _totalRows; public int TotalRows { get => _totalRows; set { _totalRows = value; OnChanged(); } }
+    private int _currentRowIndex; public int CurrentRowIndex { get => _currentRowIndex; set { _currentRowIndex = value; OnChanged(); } }
+    private int _successCount; public int SuccessCount { get => _successCount; set { _successCount = value; OnChanged(); } }
+    private int _failCount; public int FailCount { get => _failCount; set { _failCount = value; OnChanged(); } }
+    private int _skipCount; public int SkipCount { get => _skipCount; set { _skipCount = value; OnChanged(); } }
+    private bool _isCompleted; public bool IsCompleted { get => _isCompleted; set { _isCompleted = value; OnChanged(); } }
+    private bool _isCanceled; public bool IsCanceled { get => _isCanceled; set { _isCanceled = value; OnChanged(); } }
+    private string _outputFolder = string.Empty; public string OutputFolder { get => _outputFolder; set { _outputFolder = value; OnChanged(); } }
+    public ObservableCollection<string> Logs { get; set; } = new();
     public List<(int rowIndex, string fileName, string error)> Failures { get; set; } = new();
 
     public double ProgressPercent => TotalRows == 0 ? 0 : Math.Round((double)CurrentRowIndex / TotalRows * 100, 1);

@@ -117,6 +117,23 @@ public class ValidationService
             });
         }
 
+        // 2b. 单文件模式：Sheet总数超过Excel上限 → 报错
+        if (outputMode == OutputMode.SingleFileMultiSheet)
+        {
+            const int MaxSheetsPerWorkbook = 200; // Excel上限255，留余量用200
+            int totalSheets = template.SheetCount * dataSource.Rows.Count;
+            if (totalSheets > MaxSheetsPerWorkbook)
+            {
+                result.Issues.Add(new ValidationIssue
+                {
+                    Level = ValidationLevel.Error,
+                    Message = $"单文件模式下，Sheet总数将达到 {totalSheets} 个（{template.SheetCount}×{dataSource.Rows.Count}），" +
+                              $"超过Excel工作簿上限（{MaxSheetsPerWorkbook}个）。",
+                    Suggestion = $"请改用「每行→独立文件」模式，或减少数据行数至 {MaxSheetsPerWorkbook / template.SheetCount} 行以内。"
+                });
+            }
+        }
+
         // 3. 占位符缺失列（警告，不报错）
         foreach (var ph in template.Placeholders.Where(p => !p.IsMatched))
         {

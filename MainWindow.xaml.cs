@@ -1,11 +1,15 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using ExcelMailMerge.Models;
 using ExcelMailMerge.ViewModels;
 
@@ -14,13 +18,26 @@ namespace ExcelMailMerge;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
+    private CancellationTokenSource? _pipeCts;
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+    private const int SW_RESTORE = 9;
 
     public MainWindow()
     {
         InitializeComponent();
         _vm = new MainViewModel();
         DataContext = _vm;
-        Closing += (_, _) => _vm.SaveSettings();
+        Closing += (_, _) =>
+        {
+            _pipeCts?.Cancel();
+            _vm.SaveSettings();
+        };
 
         // 订阅集合变化，动态重建 DataGrid 列
         _vm.Columns.CollectionChanged += (_, _) => RebuildPreviewColumns();
@@ -38,6 +55,44 @@ public partial class MainWindow : Window
 
         RebuildPreviewColumns();
         RebuildTemplateContentColumns();
+
+        // 启动命名管道监听，接收第二个实例的激活请求
+        StartPipeListener();
+    }
+
+    private void StartPipeListener()
+    {
+        _pipeCts = new CancellationTokenSource();
+        var token = _pipeCts.Token;
+        ThreadPool.QueueUserWorkItem(async _ =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    using var server = new NamedPipeServerStream("ExcelMailMerge_ActivatePipe", PipeDirection.In);
+                    await server.WaitForConnectionAsync(token);
+                    // 收到连接请求 → 激活主窗口
+                    Dispatcher.Invoke(() => ActivateMainWindow());
+                    server.Disconnect();
+                }
+                catch (OperationCanceledException) { break; }
+                catch { /* 忽略管道错误，继续监听 */ }
+            }
+        });
+    }
+
+    private void ActivateMainWindow()
+    {
+        try
+        {
+            if (IsIconic(new WindowInteropHelper(this).Handle))
+                ShowWindow(new WindowInteropHelper(this).Handle, SW_RESTORE);
+            Show();
+            Activate();
+            SetForegroundWindow(new WindowInteropHelper(this).Handle);
+        }
+        catch { }
     }
 
     /// <summary>

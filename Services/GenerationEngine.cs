@@ -15,6 +15,13 @@ public class GenerationEngine
 
     public GenerationEngine(NamingService naming, TemplateService tplSvc) { _naming = naming; _tplSvc = tplSvc; }
 
+    // 磁盘追踪日志（独立于 UI Progress，即使挂住也能看到进度）
+    private static readonly string TraceFile = Path.Combine(Path.GetTempPath(), "ExcelMailMerge_trace.log");
+    private static void Trace(string msg)
+    {
+        try { File.AppendAllText(TraceFile, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+    }
+
     /// <summary>
     /// 执行生成（异步可取消，报告进度）
     /// </summary>
@@ -45,11 +52,15 @@ public class GenerationEngine
 
         try
         {
-            if (outputMode == OutputMode.MultiFilePerRow)
-                await RunModeB(dataSource, template, namingResults, outputFolder, writeSettings, pg, progress, ct);
-            else
-                await RunModeA(dataSource, template, namingResults, namingSeparator, outputFolder, writeSettings,
-                    singleFileName, pg, progress, ct);
+            // 切到线程池执行，避免 ClosedXML 的 CPU 密集型操作阻塞 UI 线程
+            await Task.Run(async () =>
+            {
+                if (outputMode == OutputMode.MultiFilePerRow)
+                    await RunModeB(dataSource, template, namingResults, outputFolder, writeSettings, pg, progress, ct);
+                else
+                    await RunModeA(dataSource, template, namingResults, namingSeparator, outputFolder, writeSettings,
+                        singleFileName, pg, progress, ct);
+            });
         }
         catch (OperationCanceledException)
         {
@@ -222,7 +233,7 @@ public class GenerationEngine
     }
 
     // ========== 模式B：每行→独立文件 ==========
-    private async Task RunModeB(
+    private Task RunModeB(
         ParsedDataSource dataSource,
         ScannedTemplate template,
         List<NamingResult> namingResults,
@@ -269,14 +280,15 @@ public class GenerationEngine
                 pg.Logs.Add($"[FAIL] 第{row.OriginalRowIndex}行 [{nr.Name}] → {ex.Message}");
             }
 
-            progress?.Report(pg);
-            // 每20条让出一点UI时间
-            if (i % 20 == 0) await Task.Yield();
+            // 节流：每5行或最后一行才报告进度
+            if (i % 5 == 0 || i == dataSource.Rows.Count - 1)
+                progress?.Report(pg);
         }
+        return Task.CompletedTask;
     }
 
     // ========== 模式A：所有行→同一文件 ==========
-    private async Task RunModeA(
+    private Task RunModeA(
         ParsedDataSource dataSource,
         ScannedTemplate template,
         List<NamingResult> namingResults,
@@ -288,6 +300,16 @@ public class GenerationEngine
         IProgress<GenerationProgress>? progress,
         CancellationToken ct)
     {
+        // 安全检查：Sheet总数不得超过Excel上限
+        const int MaxSheetsPerWorkbook = 200;
+        int totalSheets = template.SheetCount * dataSource.Rows.Count;
+        if (totalSheets > MaxSheetsPerWorkbook)
+        {
+            pg.FailCount = dataSource.Rows.Count;
+            pg.Logs.Add($"[ERROR] 单文件模式Sheet总数 {totalSheets} 超过上限 {MaxSheetsPerWorkbook}，已阻止生成。");
+            return Task.CompletedTask;
+        }
+
         var outFileName = string.IsNullOrWhiteSpace(singleFileName)
             ? $"合并结果_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
             : (_naming.SanitizeForFileName(singleFileName!.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
@@ -298,8 +320,14 @@ public class GenerationEngine
         using var outputWb = new XLWorkbook();
         var usedSheetNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // 先把模板所有Sheet作为"母版"复制一遍，然后在内存里复制
-        // 更高效的做法是：每一行 → 对模板每个Sheet做CloneTo，然后填入
+        // 模板只打开一次，循环内复用（避免每行重新解析模板文件）
+        var tplSw = System.Diagnostics.Stopwatch.StartNew();
+        using var tplWb = new XLWorkbook(template.FilePath);
+        tplSw.Stop();
+        pg.Logs.Add($"[计时] 打开模板: {tplSw.ElapsedMilliseconds}ms");
+        Trace($"RunModeA 开始: {dataSource.Rows.Count}行, 模板Sheet数={template.SheetCount}");
+
+        var loopSw = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; i < dataSource.Rows.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -312,26 +340,20 @@ public class GenerationEngine
                 if (!nr.IsValid)
                     throw new InvalidOperationException($"命名组合无效：{nr.ErrorMessage}");
 
-                // 打开模板只读一遍，逐Sheet克隆
-                using var tplWb = new XLWorkbook(template.FilePath);
                 var baseName = _naming.SanitizeForFileName(nr.Name);
 
                 foreach (var tplWs in tplWb.Worksheets)
                 {
-                    // 生成新Sheet名（加命名前缀，防重名）
                     var newSheetName = _naming.EnsureUniqueSheetName(usedSheetNames, baseName, tplWs.Name);
-
-                    // 复制：ClosedXML无直接跨WB的Sheet克隆，所以把整个模板工作簿当作源，逐单元格复制
-                    // 简单方案：将tplWs的UsedRange复制到新的目标Sheet
                     var destWs = outputWb.AddWorksheet(newSheetName);
                     CopySheetContentAndStyle(tplWs, destWs);
-
-                    // 填充占位符
                     FillWorksheet(destWs, row, writeSettings);
                 }
 
                 pg.SuccessCount++;
-                pg.Logs.Add($"[OK]   第{row.OriginalRowIndex}行（{baseName}）→ Sheet已加入");
+                // 只记录前5行和每20行的日志，避免日志过多
+                if (i < 5 || i % 20 == 0)
+                    pg.Logs.Add($"[OK]   第{row.OriginalRowIndex}行（{baseName}）→ Sheet已加入");
             }
             catch (Exception ex)
             {
@@ -340,13 +362,37 @@ public class GenerationEngine
                 pg.Logs.Add($"[FAIL] 第{row.OriginalRowIndex}行 [{nr.Name}] → {ex.Message}");
             }
 
-            progress?.Report(pg);
-            if (i % 10 == 0) await Task.Yield();
-        }
+            // 磁盘追踪：每10行写一次
+            if (i % 10 == 0)
+                Trace($"  行 {i+1}/{dataSource.Rows.Count} 完成, 成功={pg.SuccessCount}, 耗时={loopSw.ElapsedMilliseconds}ms");
 
-        // 模式A：所有占位符替换完成后，统一把所有公式转为值
+            // 节流：每5行或最后一行才报告进度，避免大量 Dispatcher Post 淹没 UI 线程
+            if (i % 5 == 0 || i == dataSource.Rows.Count - 1)
+                progress?.Report(pg);
+        }
+        loopSw.Stop();
+        pg.Logs.Add($"[计时] 循环处理 {dataSource.Rows.Count} 行: {loopSw.ElapsedMilliseconds}ms");
+        Trace($"循环完成: {loopSw.ElapsedMilliseconds}ms, 开始公式转值...");
+        pg.Logs.Add("[进度] 正在转换公式为值...");
+        progress?.Report(pg);
+
+        var formulaSw = System.Diagnostics.Stopwatch.StartNew();
         ConvertFormulasToValues(outputWb, writeSettings);
+        formulaSw.Stop();
+        Trace($"公式转值完成: {formulaSw.ElapsedMilliseconds}ms, 开始保存...");
+        pg.Logs.Add($"[计时] 公式转值: {formulaSw.ElapsedMilliseconds}ms");
+        pg.Logs.Add("[进度] 正在保存文件（单文件模式Sheet较多时可能较慢）...");
+        progress?.Report(pg);
+
+        var saveSw = System.Diagnostics.Stopwatch.StartNew();
         outputWb.SaveAs(outPath);
+        saveSw.Stop();
+        Trace($"保存完成: {saveSw.ElapsedMilliseconds}ms, 总结束");
+        pg.Logs.Add($"[计时] 保存文件: {saveSw.ElapsedMilliseconds}ms");
+        pg.Logs.Add($"[计时] 总耗时: {tplSw.ElapsedMilliseconds + loopSw.ElapsedMilliseconds + formulaSw.ElapsedMilliseconds + saveSw.ElapsedMilliseconds}ms");
+        progress?.Report(pg);
+
+        return Task.CompletedTask;
     }
 
     // ========== 工具方法：逐单元格填充 ==========
@@ -440,6 +486,7 @@ public class GenerationEngine
     // ========== 工具方法：跨工作簿复制Sheet内容+样式 ==========
     private static void CopySheetContentAndStyle(IXLWorksheet src, IXLWorksheet dst)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var srcUsed = src.RangeUsed();
         if (srcUsed == null) return;
 
@@ -447,32 +494,75 @@ public class GenerationEngine
         int lastCol = srcUsed.LastColumn().ColumnNumber();
         int firstRow = srcUsed.FirstRow().RowNumber();
         int lastRow = srcUsed.LastRow().RowNumber();
-        // 扩展1列1行：确保最右列右边框、最末行下边框也被覆盖（RangeUsed只算"有内容"的单元格）
+        Trace($"    CopySheet: RangeUsed firstCol={firstCol} lastCol={lastCol} firstRow={firstRow} lastRow={lastRow} [{sw.ElapsedMilliseconds}ms]");
+
+        // 扩展1列1行：确保最右列右边框、最末行下边框也被覆盖
         lastCol++;
         lastRow++;
+
+        // 进一步扩展列范围：覆盖无内容但有自定义宽度的列
+        int maxColProbe = lastCol + 30;
+        for (int c = lastCol + 1; c <= maxColProbe; c++)
+        {
+            try
+            {
+                if (Math.Abs(src.Column(c).Width - src.ColumnWidth) > 0.01)
+                    lastCol = c;
+            }
+            catch { break; }
+        }
+        Trace($"    CopySheet: 列探查完成 lastCol={lastCol} [{sw.ElapsedMilliseconds}ms]");
+
+        // 进一步扩展行范围：覆盖无内容但有自定义行高的行
+        // 注意：必须比较自定义行高与默认行高，否则默认行高15 > 0恒为true导致无限循环
+        double defaultRowHeight = src.RowHeight;
+        int maxRowProbe = lastRow + 30;
+        for (int r = lastRow + 1; r <= maxRowProbe; r++)
+        {
+            try
+            {
+                if (Math.Abs(src.Row(r).Height - defaultRowHeight) > 0.01)
+                    lastRow = r;
+            }
+            catch { break; }
+        }
+        Trace($"    CopySheet: 行探查完成 lastRow={lastRow} [{sw.ElapsedMilliseconds}ms]");
 
         var srcRange = src.Range(firstRow, firstCol, lastRow, lastCol);
 
         // 1. 一次性 CopyTo：值+样式+合并区域+数字格式+条件格式，全都拷贝
         srcRange.CopyTo(dst.FirstCell());
+        Trace($"    CopySheet: CopyTo完成 ({lastRow-firstRow+1}行×{lastCol-firstCol+1}列) [{sw.ElapsedMilliseconds}ms]");
 
-        // 2. 单独复制列宽和行高（CopyTo 不带这个）
-        for (int c = firstCol; c <= lastCol; c++)
-        {
-            try { dst.Column(c).Width = src.Column(c).Width; } catch { }
-        }
-        for (int r = firstRow; r <= lastRow; r++)
-        {
-            try { dst.Row(r).Height = src.Row(r).Height; } catch { }
-        }
-
-        // 3. Sheet 属性
-        try { dst.TabColor = src.TabColor; } catch { }
+        // 2. 先设置工作表级默认值（列宽/行高/Tab颜色）
         try { dst.ColumnWidth = src.ColumnWidth; } catch { }
         try { dst.RowHeight = src.RowHeight; } catch { }
+        try { dst.TabColor = src.TabColor; } catch { }
 
-        // 4. 保留 dst 的 UsedRange（不含空填充列）给后续填充占位符用
-        //    ClosedXML 的 CopyTo 已把值/样式/合并复制完毕，UsedRange 扫描会自动识别
+        // 3. 复制所有列宽（从第1列开始）
+        for (int c = 1; c <= lastCol; c++)
+        {
+            try
+            {
+                dst.Column(c).Width = src.Column(c).Width;
+                if (src.Column(c).IsHidden) dst.Column(c).Hide();
+            }
+            catch { }
+        }
+        Trace($"    CopySheet: 列宽复制完成 ({lastCol}列) [{sw.ElapsedMilliseconds}ms]");
+
+        // 4. 复制所有行高（从第1行开始）
+        for (int r = 1; r <= lastRow; r++)
+        {
+            try
+            {
+                if (src.Row(r).Height > 0)
+                    dst.Row(r).Height = src.Row(r).Height;
+                if (src.Row(r).IsHidden) dst.Row(r).Hide();
+            }
+            catch { }
+        }
+        Trace($"    CopySheet: 行高复制完成 ({lastRow}行) [{sw.ElapsedMilliseconds}ms]");
     }
 
     // ========== 日志导出 ==========

@@ -154,8 +154,8 @@
                 <Grid>
                     <DataGrid x:Name="PreviewGrid" ItemsSource="{Binding PreviewRows, RelativeSource={RelativeSource AncestorType=Window}}"
                               AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True"
-                              HeadersVisibility="All" GridLinesVisibility="All"
-                              RowHeaderWidth="60" CanUserResizeColumns="True"/>
+                              HeadersVisibility="Column" GridLinesVisibility="All"
+                              CanUserResizeColumns="True"/>
                     <Border x:Name="EmptyHint" Background="#FFFBEB" BorderBrush="#D4A256" BorderThickness="1" Margin="12" CornerRadius="4" Padding="12" VerticalAlignment="Top">
                         <TextBlock Text="💡 还没有模板预览。请先点「📄 用 Excel/WPS 打开模板」，编辑完保存后本窗口会自动重载。" FontSize="11" Foreground="#92400E" TextWrapping="Wrap"/>
                     </Border>

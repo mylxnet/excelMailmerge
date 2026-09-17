@@ -1,6 +1,6 @@
 # Excel 格式模板快速生成工具
 
-一款基于 WPF + ClosedXML 的 Windows 桌面应用，实现类似"邮件合并"的 Excel 批量填充功能。word的邮件合并是excel-word，而这个是Excel-Excel，支持 **Office Excel** 和 **WPS 电子表格**。
+一款基于 WPF + ClosedXML 的 Windows 桌面应用，实现类似"邮件合并"的 Excel 批量填充功能。支持 **Office Excel** 和 **WPS 电子表格**。
 
 > 当前版本：**v1.0.0** · .NET 8 · ClosedXML 0.102
 
@@ -34,7 +34,6 @@
 ## 🖥 界面预览
 
 四步渐进式向导：
-<img width="1288" height="827" alt="image" src="https://github.com/user-attachments/assets/b40adf7d-924b-4737-a218-4ff438582cc6" />
 
 ```
 ① 数据源  ──→  ② 模板  ──→  ③ 预览  ──→  ④ 生成

@@ -538,13 +538,21 @@ public class MainViewModel : ObservableObject
     // ================ 方法：浏览文件 ================
     private void BrowseDataSource()
     {
-        var dlg = new OpenFileDialog { Filter = "Excel文件 (*.xlsx)|*.xlsx" };
-        if (dlg.ShowDialog() == true) DataSourceFilePath = dlg.FileName;
+        var dlg = new OpenFileDialog { Filter = "Excel/WPS 文件 (*.xlsx;*.xls;*.et)|*.xlsx;*.xls;*.et|Excel 文件 (*.xlsx)|*.xlsx|Excel 97-2003 (*.xls)|*.xls|WPS 表格 (*.et)|*.et|所有文件|*.*" };
+        if (dlg.ShowDialog() == true)
+        {
+            try { DataSourceFilePath = FileFormatConverter.EnsureXlsx(dlg.FileName); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "文件转换失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        }
     }
     private void BrowseTemplate()
     {
-        var dlg = new OpenFileDialog { Filter = "Excel模板 (*.xlsx)|*.xlsx" };
-        if (dlg.ShowDialog() == true) TemplateFilePath = dlg.FileName;
+        var dlg = new OpenFileDialog { Filter = "Excel/WPS 模板 (*.xlsx;*.xls;*.et)|*.xlsx;*.xls;*.et|Excel 文件 (*.xlsx)|*.xlsx|Excel 97-2003 (*.xls)|*.xls|WPS 表格 (*.et)|*.et|所有文件|*.*" };
+        if (dlg.ShowDialog() == true)
+        {
+            try { TemplateFilePath = FileFormatConverter.EnsureXlsx(dlg.FileName); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "文件转换失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        }
     }
 
     public event Action<string>? RequestSetTemplateFilePath;
@@ -590,8 +598,11 @@ public class MainViewModel : ObservableObject
     // ================ 方法：数据源 ================
     public void LoadDataSourceFromDrop(string path)
     {
-        if (File.Exists(path) && (path.EndsWith(".xlsx") || path.EndsWith(".xlsm")))
-            DataSourceFilePath = path;
+        if (!File.Exists(path)) return;
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not (".xlsx" or ".xlsm" or ".xls" or ".et")) return;
+        try { DataSourceFilePath = FileFormatConverter.EnsureXlsx(path); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "文件转换失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
     private void LoadDataSourceSheets()
@@ -632,6 +643,16 @@ public class MainViewModel : ObservableObject
             // 数据源阶段自动校验（合并单元格、标题等）
             DataSourceIssues = _valSvc.ValidateDataSource(parsed);
 
+            // 校验不通过：清空数据源地址，用户需修复后重新选择
+            if (_dataSourceIssues != null && _dataSourceIssues.ErrorCount > 0)
+            {
+                _dataSourceFilePath = null;
+                OnPropertyChanged(nameof(DataSourceFilePath));
+                OnPropertyChanged(nameof(HasDataSource));
+                OnPropertyChanged(nameof(StageStatusText));
+                return;
+            }
+
             // 恢复上次选中的命名列
             if (_pendingPrimaryNamingCol != null)
             {
@@ -657,8 +678,11 @@ public class MainViewModel : ObservableObject
     // ================ 方法：模板扫描 ================
     public void LoadTemplateFromDrop(string path)
     {
-        if (File.Exists(path) && (path.EndsWith(".xlsx") || path.EndsWith(".xlsm")))
-            TemplateFilePath = path;
+        if (!File.Exists(path)) return;
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext is not (".xlsx" or ".xlsm" or ".xls" or ".et")) return;
+        try { TemplateFilePath = FileFormatConverter.EnsureXlsx(path); }
+        catch (Exception ex) { MessageBox.Show(ex.Message, "文件转换失败", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
     private void ScanTemplate()
@@ -788,11 +812,26 @@ public class MainViewModel : ObservableObject
         {
             ValidationResult = _valSvc.Validate(ParsedDataSource, ScannedTemplate,
                 GetNamingColumnNames(), NamingSeparator, OutputMode);
+
+            // 仅在手动点击"校验"按钮时弹窗（showMsgOnSuccess=true）
+            // 自动校验（选择数据源/模板后触发）不弹窗，只在界面上显示红色错误项
             if (showMsgOnSuccess)
-                MessageBox.Show(ValidationResult.SummaryText,
-                    ValidationResult.IsSuccess ? "✅ 校验通过" : "❌ 校验未通过",
-                    MessageBoxButton.OK,
-                    ValidationResult.IsSuccess ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            {
+                if (!ValidationResult.IsSuccess)
+                {
+                    var errorDetails = string.Join("\n", ValidationResult.Issues
+                        .Where(i => i.Level == ValidationLevel.Error)
+                        .Select(i => $"❌ {i.Message}\n   → {i.Suggestion}"));
+                    if (string.IsNullOrEmpty(errorDetails))
+                        errorDetails = ValidationResult.SummaryText;
+                    MessageBox.Show(errorDetails, "❌ 校验未通过", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else
+                {
+                    MessageBox.Show(ValidationResult.SummaryText, "✅ 校验通过",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
         }
         catch (Exception ex) { MessageBox.Show($"校验异常：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -836,6 +875,10 @@ public class MainViewModel : ObservableObject
     private async Task GenerateAsync(object? _)
     {
         if (!CanStartGenerate || ParsedDataSource == null || ScannedTemplate == null) return;
+
+        // 单文件模式：检查Sheet总数是否超过Excel上限（已在 RunValidation 中提示）
+        // 此处保留引擎层安全检查，不弹窗（因为校验不通过时生成按钮不可用）
+
         IsGenerating = true;
         _cts = new CancellationTokenSource();
         Progress = new GenerationProgress { TotalRows = ParsedDataSource.Rows.Count };
@@ -849,11 +892,8 @@ public class MainViewModel : ObservableObject
             pg.IsCompleted = p.IsCompleted;
             pg.IsCanceled = p.IsCanceled;
             pg.OutputFolder = p.OutputFolder;
-            if (p.Logs.Count > pg.Logs.Count)
-            {
-                for (int i = pg.Logs.Count; i < p.Logs.Count; i++) pg.Logs.Add(p.Logs[i]);
-            }
-            OnPropertyChanged(nameof(Progress));
+            // 日志增量同步：ObservableCollection Add 自动触发 UI 刷新
+            for (int i = pg.Logs.Count; i < p.Logs.Count; i++) pg.Logs.Add(p.Logs[i]);
         });
 
         try
@@ -895,9 +935,7 @@ public class MainViewModel : ObservableObject
     {
         var s = _settingsSvc.Load();
         if (s == null) return;
-        _dataSourceFilePath = s.DataSourceFilePath; OnPropertyChanged(nameof(DataSourceFilePath));
         _titleRowIndex = s.TitleRowIndex < 1 ? 1 : s.TitleRowIndex; OnPropertyChanged(nameof(TitleRowIndex));
-        _templateFilePath = s.TemplateFilePath; OnPropertyChanged(nameof(TemplateFilePath));
         _outputMode = s.OutputMode; OnPropertyChanged(nameof(OutputMode)); OnPropertyChanged(nameof(IsSingleFileMode));
         _namingSeparator = string.IsNullOrEmpty(s.NamingSeparator) ? "_" : s.NamingSeparator; OnPropertyChanged(nameof(NamingSeparator));
         _customOutputFolder = s.CustomOutputFolder; OnPropertyChanged(nameof(CustomOutputFolder));
@@ -906,24 +944,16 @@ public class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(WriteSettings));
         _pendingPrimaryNamingCol = s.PrimaryNamingColumn;
         _pendingSecondaryNamingCol = s.SecondaryNamingColumn;
-
-        Application.Current?.Dispatcher.BeginInvoke(() =>
-        {
-            if (!string.IsNullOrWhiteSpace(DataSourceFilePath) && File.Exists(DataSourceFilePath))
-                LoadDataSourceSheets();
-            else if (!string.IsNullOrWhiteSpace(TemplateFilePath) && File.Exists(TemplateFilePath))
-                ScanTemplate();
-        });
     }
 
     public void SaveSettings()
     {
         _settingsSvc.Save(new AppSettings
         {
-            DataSourceFilePath = DataSourceFilePath,
-            DataSourceSheetName = SelectedSheet?.SheetName,
+            DataSourceFilePath = null,
+            DataSourceSheetName = null,
             TitleRowIndex = TitleRowIndex,
-            TemplateFilePath = TemplateFilePath,
+            TemplateFilePath = null,
             OutputMode = OutputMode,
             PrimaryNamingColumn = PrimaryNamingColumn?.DisplayName,
             SecondaryNamingColumn = SecondaryNamingColumn?.DisplayName,

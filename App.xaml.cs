@@ -1,6 +1,11 @@
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
+using System.Windows.Interop;
 using ExcelMailMerge.Models;
 using ExcelMailMerge.Services;
 
@@ -11,10 +16,38 @@ namespace ExcelMailMerge;
 /// </summary>
 public partial class App : Application
 {
+    private Mutex? _singleInstanceMutex;
+    private const string MutexName = "ExcelMailMerge_SingleInstance_Mutex";
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    private const int SW_RESTORE = 9;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         try
         {
+            // 命令行模式不走单实例检测
+            bool isCmdMode = e.Args.Length > 0 && (e.Args[0] == "--gen-test-files" || e.Args[0] == "--load-test" || e.Args[0] == "--smoke-test");
+
+            if (!isCmdMode)
+            {
+                // 启动前结束所有残留实例，避免多开或异常占用的进程（如未释放的文件锁）
+                KillRunningInstances();
+
+                // 单实例检测：被杀进程的命名内核对象可能尚未释放，因此重试获取
+                _singleInstanceMutex = TryAcquireMutex(20, 200);
+                if (_singleInstanceMutex == null)
+                {
+                    // 兜底：仍被占用，通知已有实例激活窗口后自身退出
+                    NotifyExistingInstance();
+                    Environment.Exit(0);
+                    return;
+                }
+            }
+
             // 命令行模式：--gen-test-files 生成测试数据文件后退出
             if (e.Args.Length > 0 && e.Args[0] == "--gen-test-files")
             {
@@ -51,6 +84,75 @@ public partial class App : Application
             MessageBox.Show($"{ex.GetType().Name}: {ex.Message}\n\n详情已写入: {logPath}", "启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        FileFormatConverter.Cleanup();
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
+        base.OnExit(e);
+    }
+
+    /// <summary>
+    /// 结束所有正在运行的同类进程（当前进程除外），防止多开或残留进程占用文件与资源
+    /// </summary>
+    private static void KillRunningInstances()
+    {
+        try
+        {
+            var current = Process.GetCurrentProcess();
+            var others = Process.GetProcessesByName(current.ProcessName)
+                                .Where(p => p.Id != current.Id)
+                                .ToList();
+
+            if (others.Count == 0) return;
+
+            foreach (var p in others)
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+            }
+
+            // 等待进程真正退出（每个最多 5 秒），确保文件锁与内核对象被释放
+            foreach (var p in others)
+            {
+                try { p.WaitForExit(5000); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 尝试获取单实例互斥锁，失败时重试（被杀进程的命名内核对象可能尚未释放）
+    /// </summary>
+    private static Mutex? TryAcquireMutex(int retries, int delayMs)
+    {
+        for (int i = 0; i < retries; i++)
+        {
+            try
+            {
+                var mutex = new Mutex(true, MutexName, out bool createdNew);
+                if (createdNew) return mutex;
+                mutex.Dispose();
+            }
+            catch { }
+            Thread.Sleep(delayMs);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 通过 NamedPipe 通知已有实例激活主窗口
+    /// </summary>
+    private static void NotifyExistingInstance()
+    {
+        try
+        {
+            using var pipe = new System.IO.Pipes.NamedPipeClientStream(".", "ExcelMailMerge_ActivatePipe", System.IO.Pipes.PipeDirection.Out);
+            pipe.Connect(3000);
+            pipe.Write(new byte[] { 1 }, 0, 1);
+        }
+        catch { }
     }
 
     /// <summary>
@@ -326,6 +428,56 @@ public partial class App : Application
                 // 检查公式是否转为值
                 var formulaCell = ws.Cell(6, 2);
                 Log($"  B6值: {formulaCell.Value} (公式:{formulaCell.FormulaA1})");
+            }
+
+            // 7. 单文件模式 + 列宽验证
+            Log("\n--- 7. 单文件模式 + 列宽验证 ---");
+            var singleOutputDir = Path.Combine(outputDir, "单文件测试");
+            if (Directory.Exists(singleOutputDir)) Directory.Delete(singleOutputDir, true);
+            Directory.CreateDirectory(singleOutputDir);
+
+            var singleResult = Task.Run(() => engine.GenerateAsync(
+                parsed, template, namingCols, "_",
+                OutputMode.SingleFileMultiSheet, singleOutputDir,
+                writeSettings, null, progress)).GetAwaiter().GetResult();
+
+            Log($"  完成: {singleResult.IsCompleted}");
+            Log($"  成功数: {singleResult.SuccessCount}");
+            Log($"  失败数: {singleResult.FailCount}");
+
+            // 验证列宽和行高
+            var singleFiles = Directory.GetFiles(singleOutputDir, "*.xlsx", SearchOption.AllDirectories);
+            if (singleFiles.Length > 0)
+            {
+                using var tplWb = new ClosedXML.Excel.XLWorkbook(templatePath);
+                var tplWs = tplWb.Worksheets.First();
+                using var outWb = new ClosedXML.Excel.XLWorkbook(singleFiles[0]);
+                var outWs = outWb.Worksheets.First();
+
+                Log($"  模板Sheet: {tplWs.Name}, 输出Sheet: {outWs.Name}");
+                Log("  列宽对比:");
+                int maxCol = Math.Max(
+                    tplWs.LastColumnUsed()?.ColumnNumber() ?? 0,
+                    outWs.LastColumnUsed()?.ColumnNumber() ?? 0);
+                for (int c = 1; c <= Math.Max(maxCol, 8); c++)
+                {
+                    var tplW = tplWs.Column(c).Width;
+                    var outW = outWs.Column(c).Width;
+                    var match = Math.Abs(tplW - outW) < 0.01;
+                    Log($"    列{c}: 模板={tplW:F2} 输出={outW:F2} {(match ? "✓" : "✗ 不一致!")}");
+                }
+
+                Log("  行高对比:");
+                int maxRow = Math.Max(
+                    tplWs.LastRowUsed()?.RowNumber() ?? 0,
+                    outWs.LastRowUsed()?.RowNumber() ?? 0);
+                for (int r = 1; r <= Math.Max(maxRow, 6); r++)
+                {
+                    var tplH = tplWs.Row(r).Height;
+                    var outH = outWs.Row(r).Height;
+                    var match = Math.Abs(tplH - outH) < 0.01;
+                    Log($"    行{r}: 模板={tplH:F2} 输出={outH:F2} {(match ? "✓" : "✗ 不一致!")}");
+                }
             }
 
             Log("\n========== 冒烟测试完成 ==========");
