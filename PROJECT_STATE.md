@@ -65,11 +65,13 @@
 
 | 位置                               | 说明                          |
 | -------------------------------- | --------------------------- |
-| `publish/ExcelMailMerge.exe`     | self-contained 单文件（71MB）    |
-| `Excel格式模板快速生成工具_v1.0.0_安装版.exe` | WinRAR 自解压安装程序（64.72MB）     |
-| `Excel格式模板快速生成工具_v1.0.0.zip`     | 便携版（65.46MB）                |
+| `_build_v1.1.2/publish/ExcelMailMerge.exe` | self-contained 单文件（70.96MB，ver 1.1.2.0） |
+| `Excel格式模板快速生成工具_v1.1.2_安装版.exe` | WinRAR 自解压安装程序（64.80MB）     |
+| `Excel格式模板快速生成工具_v1.1.2.zip`     | 便携版（65.53MB）                |
+| `Excel格式模板快速生成工具_v1.0.0_安装版.exe` | 旧版安装包（v1.0.0，留档）           |
+| `Excel格式模板快速生成工具_v1.0.0.zip`     | 旧版便携包（v1.0.0，留档）            |
 | `Archive_v1.0.0_*/`              | 源码存档（Git 备份）                |
-| `ExcelMailMerge_github/`         | GitHub 仓库源码（29 文件 / 5039 行） |
+| `ExcelMailMerge_github/`         | GitHub 仓库源码（40 文件）           |
 
 ***
 
@@ -287,7 +289,7 @@
 | - | --------------------------------------------------- | --------------------------------- | ---------------------------------------- |
 | 1 | 多 Sheet 模板修改只能在 Excel/WPS 里做                        | 我们的模板编辑器极简版不支持切 Sheet 编辑          | 直接用外部 Excel/WPS，让 FileSystemWatcher 自动重载 |
 | 2 | 占位符 `{列名}` 区分大小写 + trim                             | 设计决策：精确匹配，不做模糊                    | 用户写模板时注意列名大小写和空格                         |
-| 3 | `.xls`（老格式 Office 2003）不支持                          | ClosedXML 只支持 `.xlsx`             | 提示用户另存为 .xlsx                            |
+| 3 | `.xls` / `.et` 转换依赖本机已安装 WPS 或 Excel               | 通过 COM 互操作调用 WPS/Excel 另存为 `.xlsx` | `.xlsx` 不受影响；无 Office/WPS 时请先另存为 `.xlsx`      |
 | 4 | 图片/图表/批注/条件格式                                       | 用 `Range.CopyTo` 全部保留             | 正常工作，不需要额外代码                             |
 | 5 | 公式自动转值，不保留                                          | 设计决策（用户要求："公式不保留，直接输入公式计算的值"）     | 用户知道这是预期行为                               |
 | 6 | 数据源不支持合并单元格                                         | 设计决策 + ClosedXML 读合并会把所有子格值合并到左上角 | 校验阶段自动检测并提示用户修正                          |
@@ -301,9 +303,9 @@
 
 ### P0（高价值）
 
-* [ ] **图标/Logo**：csproj 里 `<ApplicationIcon />` 是空的，需要一个 .ico 文件（README 里提到的"快速生成工具"图标）
+* [x] ~~**图标/Logo**~~：已完成 —— 已添加 `app.ico`，并通过 csproj `<ApplicationIcon>app.ico</ApplicationIcon>` 引用
 
-* [ ] **版本号统一**：csproj 里 `Version/AssemblyVersion/FileVersion` 都是 1.0.0，需要建立 semver 升级机制
+* [x] ~~**版本号统一**~~：已完成 —— csproj 的 `Version/AssemblyVersion/FileVersion` 已统一为 **1.1.2**
 
 * [ ] **测试数据生成命令** `--gen-test-files` 依赖 ClosedXML 字体测量 AdjustToContents，可能失败 → 已用固定列宽规避，稳定
 
@@ -315,7 +317,7 @@
 
 * [ ] **模板编辑器增强**：左侧列表支持搜索过滤（当前有 SearchBox 但逻辑未验证）
 
-* [ ] **生成进度取消**：GenerationEngine.GenerateAsync 没传 CancellationToken，用户中途无法取消
+* [x] ~~**生成进度取消**~~：已完成 —— `GenerationEngine.GenerateAsync` 已接收 `CancellationToken`，`MainViewModel` 的 `CancelCmd` 触发 `_cts.Cancel()`，取消令牌在生成时传入
 
 ### P2（低价值 / 锦上添花）
 
@@ -359,9 +361,13 @@ dotnet publish -c Release -r win-x64 `
 
 # === WinRAR 自解压安装 ===
 RAR a -sfx -z"sfx.cfg" -ep1 -r -m5 `
-  "Excel格式模板快速生成工具_v1.0.0_安装版.exe" `
+  "Excel格式模板快速生成工具_v1.1.2_安装版.exe" `
   "Excel格式模板快速生成工具\"
 # sfx.cfg 内容：Setup=setup.bat / TempMode / Silent=2 / Overwrite=1
+#          Title=Excel格式模板快速生成工具 v1.1.2
+#          Shortcut=D, Excel格式模板快速生成工具
+#          Shortcut=P, Excel格式模板快速生成工具\Excel格式模板快速生成工具
+# ⚠️ sfx.cfg 必须保存为 ANSI/GBK 编码！存成 UTF-8 会让中文变成 ? 乱码（v1.0.0 安装包即踩过此坑）
 ```
 
 **必须用参数组合**：PublishSingleFile + IncludeNativeLibrariesForSelfExtract + EnableCompressionInSingleFile\
@@ -374,7 +380,7 @@ RAR a -sfx -z"sfx.cfg" -ep1 -r -m5 `
 ```
 你好，我是这个项目的 AI 助手。
 项目：Excel 格式模板快速生成工具
-版本：v1.0.0（2026-08-27）
+版本：v1.1.2（2026-09-17）
 
 请先做以下事情：
 1. 读 ExcelMailMerge.csproj 确认依赖版本
