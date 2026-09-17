@@ -2,7 +2,7 @@
 
 一款基于 WPF + ClosedXML 的 Windows 桌面应用，实现类似"邮件合并"的 Excel 批量填充功能。支持 **Office Excel** 和 **WPS 电子表格** 的 `.xlsx` / `.xls` / `.et` 文件。
 
-> 当前版本：**v1.1.2** · .NET 8 · ClosedXML 0.102
+> 当前版本：**v1.1.2** · .NET 8 · ClosedXML 0.102 · [⬇ 下载最新版](https://github.com/mylxnet/excelmailmerge/releases/latest)
 
 ---
 
@@ -54,11 +54,15 @@
 
 ## 📦 安装方式
 
+**下载地址**：https://github.com/mylxnet/excelmailmerge/releases/latest
+
 ### 方式一：自解压安装（推荐）
-双击 `Excel格式模板快速生成工具_v1.1.2_安装版.exe`，按向导安装。
+下载 `ExcelMailMerge_v1.1.2_Setup.exe`，双击按向导安装（自动创建桌面 / 开始菜单快捷方式）。
 
 ### 方式二：便携版
-解压 `Excel格式模板快速生成工具_v1.1.2.zip`，双击 `ExcelMailMerge.exe` 直接运行。
+下载 `ExcelMailMerge_v1.1.2_Portable.zip`，解压后双击 `ExcelMailMerge.exe` 直接运行，无需安装。
+
+> 📌 GitHub 上的附件名为英文（`..._Setup.exe` / `..._Portable.zip`），与本地中文原名 `Excel格式模板快速生成工具_v1.1.2_安装版.exe` / `..._v1.1.2.zip` 一一对应。
 
 > **无需安装 .NET 运行时** — 自包含单文件（Self-contained Publish），大小约 **71 MB**。
 >
